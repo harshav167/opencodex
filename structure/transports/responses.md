@@ -242,8 +242,7 @@ warm key before the first send (`selectProactiveApiKeyTransport` in
 committed key is already cooling or missing from the pool: a healthy committed key, including
 a manual selection, is left alone and the common path returns null without a config write.
 `forgetApiKeyRotationCursor` drops the process-local round-robin cursor when the operator
-edits the pool, so a later pick cannot second-guess that choice.
-
+edits the pool, so a later pick cannot second-guess that choice. The same seam first consults provider cache affinity (default `auto`): a conversation stays on its last-serving entry while eligible, never writing the committed selection (see [`inventory.md`](./inventory.md)).
 On the shared Responses path the assignment lands in `src/server/responses/core.ts`
 immediately before `resolveProviderTransport`. `route.provider` is copied into
 `adapterProvider` on the next lines, and later `providerFetch` consumers (the HTTP send,
