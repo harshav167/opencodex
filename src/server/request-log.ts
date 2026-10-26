@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { stampApiKeyAccountLabel, usesApiKeyAccount } from "../providers/label";
-import { boundEntryIdForLane, recordProviderCacheAffinity, releaseProviderCacheAffinity } from "../providers/cache-affinity";
-import { isKeyInCooldown } from "../providers/api-key-cooldowns";
+import { finalizeProviderCacheAffinity } from "./request-log-cache-affinity";
+
 import { KEY_ACCOUNT_LOG_LABEL_RE } from "../codex/account-label";
 import { attemptAccountChanged, sealRequestAttemptIdentity } from "./request-log-account-rotation";
 export { sealRequestAttemptIdentity };
@@ -267,8 +267,9 @@ export interface RequestLogContext extends UpstreamErrorDiagnostics {
   conversationStateScrub?: "account-change";
   /** Explicit session lane for provider cache affinity; internal only, never persisted raw. */
   affinityLane?: string;
-  /** Key-pool entry id that ultimately served; captured beside the log label at each stamp. */
   affinityKeyEntryId?: string;
+  /** Configured provider owning the serving entry, independent of combo display labels. */
+  affinityProviderName?: string;
   /** Whether provider cache affinity applies to this request's provider at all. */
   cacheAffinityApplicable?: boolean;
   /** Entry the consult kept this request on, when it did; rotation may still move it. */
@@ -1521,41 +1522,7 @@ export function addFinalRequestLog(
   // answered. A success binds or refreshes the conversation on that
   // credential; a quota/auth terminal releases it so the next request is
   // placed fresh instead of re-offered a credential that just refused.
-  if (logCtx.affinityLane && logCtx.affinityKeyEntryId && logCtx.cacheAffinityApplicable === true) {
-    if (effectiveStatus >= 200 && effectiveStatus < 300) {
-      const previouslyBound = boundEntryIdForLane(logCtx.affinityLane);
-      recordProviderCacheAffinity({
-        lane: logCtx.affinityLane,
-        providerName: logCtx.provider,
-        entryId: logCtx.affinityKeyEntryId,
-        model: logCtx.affinityModel ?? logCtx.model,
-        cacheRead: loggedUsage?.cacheReadInputTokens ?? loggedUsage?.cachedInputTokens,
-        cacheWrite: loggedUsage?.cacheCreationInputTokens,
-        cacheWriteLong: loggedUsage?.cacheCreation1hInputTokens,
-        inputTokens: loggedUsage?.inputTokens,
-      });
-      if (logCtx.cacheAffinity === "kept" && logCtx.affinityKeptEntryId !== logCtx.affinityKeyEntryId) {
-        // The consult kept the conversation on one entry, but a rotation
-        // moved it: the binding now belongs to whoever actually served.
-        logCtx.cacheAffinity = "bound";
-        logCtx.cacheAffinityReason = "new";
-      } else if (!logCtx.cacheAffinity) {
-        // No consult opinion (first turn, or a cooling fallthrough that
-        // landed back on the bound entry): kept when the binding already
-        // named this entry, newly bound otherwise.
-        logCtx.cacheAffinity = previouslyBound === logCtx.affinityKeyEntryId ? "kept" : "bound";
-        logCtx.cacheAffinityReason = previouslyBound === logCtx.affinityKeyEntryId ? "cache" : "new";
-      }
-    } else if (effectiveStatus === 401 || effectiveStatus === 402 || effectiveStatus === 429
-      || (effectiveStatus >= 400 && isKeyInCooldown(logCtx.provider, logCtx.affinityKeyEntryId))) {
-      // The cooling check catches classified credit failures whose status is
-      // not a quota status (Anthropic's 400 billing refusal): the rotation
-      // already cooled the serving entry during this request.
-      releaseProviderCacheAffinity(logCtx.affinityLane);
-      logCtx.cacheAffinity = "released";
-      logCtx.cacheAffinityReason = effectiveStatus === 401 ? "auth" : "quota";
-    }
-  }
+  finalizeProviderCacheAffinity(logCtx, effectiveStatus, logCtx.usage ?? loggedUsage);
   // Sanitize at the logging layer, not only at the one call site that populates this today.
   // The value originates in an upstream-supplied model id, so an unsanitized newline would
   // let a single field forge a record boundary in any line-oriented log viewer. Doing it here

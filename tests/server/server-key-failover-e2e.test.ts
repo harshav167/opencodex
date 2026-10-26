@@ -9,6 +9,7 @@ import { flushConfigDirHardeningForTests } from "../../src/config/paths";
 import { flushNativeMainStartupReleases } from "../../src/codex/native-profile-startup";
 import { flushWindowsSecretAclReapsBeforeRemoval } from "../../src/lib/windows-secret-acl";
 import { clearKeyCooldowns, getKeyCooldownUntil, rotateKeyOn429 } from "../../src/providers/key-failover";
+import { clearProviderCacheAffinityForTests } from "../../src/providers/cache-affinity";
 import { deriveXaiConvId } from "../../src/providers/xai-transport";
 import {
   clearReasoningReplayCacheForTests,
@@ -60,6 +61,7 @@ beforeEach(() => {
   clearKeyCooldowns();
   clearReasoningReplayCacheForTests();
   clearBridgeSearchReplayCacheForTests();
+  clearProviderCacheAffinityForTests();
 });
 
 afterEach(async () => {
@@ -88,6 +90,7 @@ afterEach(async () => {
   clearKeyCooldowns();
   clearReasoningReplayCacheForTests();
   clearBridgeSearchReplayCacheForTests();
+  clearProviderCacheAffinityForTests();
   if (stopFailures.length > 0) throw new AggregateError(stopFailures, "tracked server stop failed in afterEach");
 });
 

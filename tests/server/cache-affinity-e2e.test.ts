@@ -12,6 +12,15 @@ import { clearProviderCacheAffinityForTests } from "../../src/providers/cache-af
 import { clearKeyCooldowns } from "../../src/providers/key-failover";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
+import { setProviderKeychainEntryFactoryForTests } from "../../src/providers/key-store";
+import { setKeyCooldown } from "../../src/providers/api-key-cooldowns";
+import { consultProviderCacheAffinity } from "../../src/providers/cache-affinity";
+import {
+  fillHermesLogConversationFallback,
+  sessionLaneIdFromRequest,
+} from "../../src/server/request-log-conversation";
+import { handleManagementAPI } from "../../src/server/management-api";
+import { ManagementRequest } from "../helpers/management-auth";
 
 const REAL_FETCH = globalThis.fetch;
 let testDir = "";
@@ -79,14 +88,23 @@ function makeConfig(): OcxConfig {
   return loadConfig();
 }
 
-async function turn(config: OcxConfig, threadId: string): Promise<RequestLogContext> {
+async function turn(
+  config: OcxConfig,
+  threadId: string,
+  model = "affinity-e2e/test",
+): Promise<RequestLogContext> {
   saveConfig(config);
   const logCtx: RequestLogContext = { model: "", provider: "" };
-  const response = await handleResponses(new Request("http://localhost/v1/responses", {
-    method: "POST",
-    headers: { "content-type": "application/json", "thread-id": threadId },
-    body: JSON.stringify({ model: "affinity-e2e/test", input: "hello", stream: false, store: false }),
-  }), config, logCtx, {});
+  const response = await handleResponses(
+    new Request("http://localhost/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json", "thread-id": threadId },
+      body: JSON.stringify({ model, input: "hello", stream: false, store: false }),
+    }),
+    config,
+    logCtx,
+    {},
+  );
   expect(response.status).toBe(200);
   await response.text();
   // The ingress layer owns finalization in production; this harness stands in for it.
@@ -154,6 +172,7 @@ describe("provider cache affinity (end-to-end)", () => {
       await server.stop(true);
     }
     globalThis.fetch = REAL_FETCH;
+    setProviderKeychainEntryFactoryForTests(null);
     clearKeyCooldowns();
     clearProviderCacheAffinityForTests();
     if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
@@ -181,6 +200,183 @@ describe("provider cache affinity (end-to-end)", () => {
     expect(seenAuth.at(-1)).toBe("Bearer key-b");
   });
 
+  test.each(["env", "keychain"])(
+    "%s pool references survive affinity dispatch re-reads",
+    async (kind) => {
+      const previous = process.env.OCX_AFFINITY_TEST_KEY;
+      process.env.OCX_AFFINITY_TEST_KEY = "key-a";
+      setProviderKeychainEntryFactoryForTests((_service, account) => ({
+        getPassword: () => (account.endsWith("/a") ? "key-a" : "key-b"),
+        setPassword() {},
+        deletePassword: () => true,
+      }));
+      try {
+        const config = makeConfig();
+        const pool = config.providers["affinity-e2e"]!;
+        const a = kind === "env" ? "$OCX_AFFINITY_TEST_KEY" : "keychain:affinity-e2e/a";
+        pool.apiKey = a;
+        pool.apiKeyPool = [
+          { id: "a", key: a },
+          { id: "b", key: "key-b" },
+        ];
+        await turn(config, "referenced-conversation");
+        pool.apiKey = "key-b";
+        const second = await turn(config, "referenced-conversation");
+        expect(seenAuth).toEqual(["Bearer key-a", "Bearer key-a"]);
+        expect(second.cacheAffinity).toBe("kept");
+      } finally {
+        if (previous === undefined) delete process.env.OCX_AFFINITY_TEST_KEY;
+        else process.env.OCX_AFFINITY_TEST_KEY = previous;
+      }
+    },
+  );
+
+  test("combo turns retain the serving provider's key binding", async () => {
+    const config = makeConfig();
+    config.combos = {
+      affinity: { strategy: "failover", targets: [{ provider: "affinity-e2e", model: "test" }] },
+    };
+    await turn(config, "combo-conversation", "combo/affinity");
+    config.providers["affinity-e2e"]!.apiKey = "key-b";
+    const second = await turn(config, "combo-conversation", "combo/affinity");
+    expect(seenAuth).toEqual(["Bearer key-a", "Bearer key-a"]);
+    expect(second.provider).toBe("combo");
+    expect(second.cacheAffinity).toBe("kept");
+  });
+
+  test.each(["responses", "chat", "messages", "compact", "combo"])(
+    "a Hermes-only identity is log-only on %s",
+    async (wire) => {
+      const config = makeConfig();
+      config.combos = {
+        affinity: { strategy: "failover", targets: [{ provider: "affinity-e2e", model: "test" }] },
+      };
+      const send = async () => {
+        saveConfig(config);
+        const log: RequestLogContext = { model: "", provider: "" };
+        const ids = { requestId: nextRequestLogId(), start: Date.now() };
+        const headers = {
+          "content-type": "application/json",
+          "x-hermes-conversation-id": "hermes-only",
+        };
+        // The HTTP ingress fills this log slot before invoking these handlers.
+        fillHermesLogConversationFallback(log, new Headers(headers));
+        const req = new Request(`http://localhost/v1/${wire}`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(
+            wire === "responses" || wire === "compact" || wire === "combo"
+              ? {
+                  model:
+                    wire === "combo"
+                      ? "combo/affinity"
+                      : `${wire === "compact" ? "affinity-compact" : "affinity-e2e"}/test`,
+                  input: "hello",
+                  stream: false,
+                }
+              : {
+                  model: wire === "messages" ? "affinity-msg/claude-test" : "affinity-chat/test",
+                  max_tokens: 16,
+                  messages: [{ role: "user", content: "hello" }],
+                },
+          ),
+        });
+        const response =
+          wire === "responses" || wire === "combo"
+            ? await handleResponses(req, config, log, {})
+            : wire === "compact"
+              ? await handleResponsesCompact(req, config, log)
+              : wire === "chat"
+                ? await handleChatCompletions(req, config, log, ids)
+                : await handleClaudeMessages(req, config, log, ids);
+        expect(response.status).toBe(200);
+        await response.text();
+        if (wire === "responses" || wire === "compact" || wire === "combo")
+          addFinalRequestLog(ids.requestId, ids.start, log, response.status);
+        expect(log.conversationId).toBeDefined();
+        expect(log.affinityLane).toBeUndefined();
+        expect(log.cacheAffinity).toBeUndefined();
+      };
+      await send();
+      for (const provider of Object.values(config.providers)) provider.apiKey = "key-b";
+      await send();
+      expect(seenAuth).toEqual(["Bearer key-a", "Bearer key-b"]);
+    },
+  );
+
+  test.each([499, 503])(
+    "another request's cooldown does not release a binding on status %s",
+    async (status) => {
+      const config = makeConfig();
+      const log = await turn(config, "unrelated-cooldown");
+      setKeyCooldown("affinity-e2e", "a", Date.now() + 60_000);
+      delete log.cacheAffinity;
+      delete log.cacheAffinityReason;
+      addFinalRequestLog(nextRequestLogId(), Date.now(), log, status);
+      clearKeyCooldowns();
+      expect(log.cacheAffinity).not.toBe("released");
+      expect(
+        consultProviderCacheAffinity({
+          lane: sessionLaneIdFromRequest(new Headers({ "thread-id": "unrelated-cooldown" })),
+          providerName: "affinity-e2e",
+          provider: config.providers["affinity-e2e"]!,
+          model: "test",
+        })?.entryId,
+      ).toBe("a");
+    },
+  );
+
+  test("an exact Anthropic credit refusal releases its binding without a shared cooldown", async () => {
+    const config = makeConfig();
+    const log = await turn(config, "billing-refusal");
+    log.providerAdapter = "anthropic";
+    log.upstreamError = "Your credit balance is too low to access the Anthropic API.";
+    log.upstreamErrorType = "invalid_request_error";
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, 400);
+    expect(log.cacheAffinity).toBe("released");
+    expect(log.cacheAffinityReason).toBe("quota");
+    expect(
+      consultProviderCacheAffinity({
+        lane: log.affinityLane,
+        providerName: "affinity-e2e",
+        provider: config.providers["affinity-e2e"]!,
+        model: "test",
+      }),
+    ).toBeNull();
+  });
+
+  test("provider POST preserves an omitted cache-affinity mode but accepts an explicit replacement", async () => {
+    const config = makeConfig();
+    config.providers["affinity-chat"]!.cacheAffinity = "off";
+    config.providers["affinity-chat"]!.baseUrl = "http://127.0.0.1:11434/v1";
+    config.providers["affinity-chat"]!.allowPrivateNetwork = true;
+    saveConfig(config);
+    const url = new URL("http://localhost/api/providers");
+    for (const mode of [undefined, "session"] as const) {
+      const response = await handleManagementAPI(
+        new ManagementRequest(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "affinity-chat",
+            provider: {
+              adapter: "openai-chat",
+              authMode: "key",
+              baseUrl: "http://127.0.0.1:11434/v1",
+              allowPrivateNetwork: true,
+              liveModels: false,
+              models: ["test"],
+              ...(mode ? { cacheAffinity: mode } : {}),
+            },
+          }),
+        }),
+        url,
+        config,
+      );
+      expect(response?.status).toBe(200);
+      expect(loadConfig().providers["affinity-chat"]!.cacheAffinity).toBe(mode ?? "off");
+    }
+  });
   test("a 429 on the bound key rotates, and the conversation rebinds to the spare", async () => {
     const config = makeConfig();
     await turn(config, "conv-1");
@@ -229,85 +425,90 @@ describe("provider cache affinity (end-to-end)", () => {
     config.providers["affinity-e2e"]!.apiKey = "key-b";
     await turn(config, "conv-1");
     expect(seenAuth).toEqual(["Bearer key-a", "Bearer key-b"]);
+    // Requests made while off must not leave a latent binding to key-a.
+    config.providers["affinity-e2e"]!.cacheAffinity = "auto";
+    const enabled = await turn(config, "conv-1");
+    expect(seenAuth.at(-1)).toBe("Bearer key-b");
+    expect(enabled.cacheAffinity).toBe("bound");
   });
 
-describe("lane wiring on the chat and messages paths", () => {
-  test("chat completions: the second turn of a conversation stays on its key", async () => {
-    const config = makeConfig();
-    const turn = async (): Promise<RequestLogContext> => {
-      const logCtx: RequestLogContext = { model: "", provider: "" };
-      const response = await handleChatCompletions(new Request("http://localhost/v1/chat/completions", {
-        method: "POST",
-        headers: { "content-type": "application/json", "thread-id": "chat-conv-1" },
-        body: JSON.stringify({ model: "affinity-chat/test", messages: [{ role: "user", content: "hi" }] }),
-      }), config, logCtx, { requestId: nextRequestLogId(), start: Date.now() });
-      expect(response.status).toBe(200);
-      await response.text();
-      return logCtx;
-    };
-    const first = await turn();
-    expect(seenAuth).toEqual(["Bearer key-a"]);
-    expect(first.cacheAffinity).toBe("bound");
-    config.providers["affinity-chat"]!.apiKey = "key-b";
-    saveConfig(config);
-    const second = await turn();
-    expect(seenAuth.at(-1)).toBe("Bearer key-a");
-    expect(second.cacheAffinity).toBe("kept");
-  });
-
-  test("responses compact: the second turn of a conversation stays on its key", async () => {
-    const config = makeConfig();
-    const turn = async (): Promise<RequestLogContext> => {
+  describe("lane wiring on the chat and messages paths", () => {
+    test("chat completions: the second turn of a conversation stays on its key", async () => {
+      const config = makeConfig();
+      const turn = async (): Promise<RequestLogContext> => {
+        const logCtx: RequestLogContext = { model: "", provider: "" };
+        const response = await handleChatCompletions(new Request("http://localhost/v1/chat/completions", {
+          method: "POST",
+          headers: { "content-type": "application/json", "thread-id": "chat-conv-1" },
+          body: JSON.stringify({ model: "affinity-chat/test", messages: [{ role: "user", content: "hi" }] }),
+        }), config, logCtx, { requestId: nextRequestLogId(), start: Date.now() });
+        expect(response.status).toBe(200);
+        await response.text();
+        return logCtx;
+      };
+      const first = await turn();
+      expect(seenAuth).toEqual(["Bearer key-a"]);
+      expect(first.cacheAffinity).toBe("bound");
+      config.providers["affinity-chat"]!.apiKey = "key-b";
       saveConfig(config);
-      const logCtx: RequestLogContext = { model: "", provider: "" };
-      const response = await handleResponsesCompact(new Request("http://localhost/v1/responses/compact", {
-        method: "POST",
-        headers: { "content-type": "application/json", "thread-id": "compact-conv-1" },
-        body: JSON.stringify({
-          model: "affinity-compact/test",
-          input: [{ role: "user", content: "fixture question" }],
-          stream: false,
-        }),
-      }), config, logCtx);
-      expect(response.status).toBe(200);
-      await response.text();
-      addFinalRequestLog(nextRequestLogId(), Date.now(), logCtx, response.status);
-      return logCtx;
-    };
-    const first = await turn();
-    expect(seenAuth).toEqual(["Bearer key-a"]);
-    expect(first.cacheAffinity).toBe("bound");
-    config.providers["affinity-compact"]!.apiKey = "key-b";
-    saveConfig(config);
-    const second = await turn();
-    expect(seenAuth.at(-1)).toBe("Bearer key-a");
-    expect(second.cacheAffinity).toBe("kept");
-  });
+      const second = await turn();
+      expect(seenAuth.at(-1)).toBe("Bearer key-a");
+      expect(second.cacheAffinity).toBe("kept");
+    });
 
-  test("claude messages: the second turn of a conversation stays on its key", async () => {
-    const config = makeConfig();
-    const turn = async (): Promise<RequestLogContext> => {
-      const logCtx: RequestLogContext = { model: "", provider: "" };
-      const response = await handleClaudeMessages(new Request("http://localhost/v1/messages", {
-        method: "POST",
-        headers: { "content-type": "application/json", "session_id": "msg-conv-1" },
-        body: JSON.stringify({
-          model: "affinity-msg/claude-test", max_tokens: 16,
-          messages: [{ role: "user", content: "hi" }],
-        }),
-      }), config, logCtx, { requestId: nextRequestLogId(), start: Date.now() });
-      expect(response.status).toBe(200);
-      await response.text();
-      return logCtx;
-    };
-    const first = await turn();
-    expect(seenAuth).toEqual(["Bearer key-a"]);
-    expect(first.cacheAffinity).toBe("bound");
-    config.providers["affinity-msg"]!.apiKey = "key-b";
-    saveConfig(config);
-    const second = await turn();
-    expect(seenAuth.at(-1)).toBe("Bearer key-a");
-    expect(second.cacheAffinity).toBe("kept");
+    test("responses compact: the second turn of a conversation stays on its key", async () => {
+      const config = makeConfig();
+      const turn = async (): Promise<RequestLogContext> => {
+        saveConfig(config);
+        const logCtx: RequestLogContext = { model: "", provider: "" };
+        const response = await handleResponsesCompact(new Request("http://localhost/v1/responses/compact", {
+          method: "POST",
+          headers: { "content-type": "application/json", "thread-id": "compact-conv-1" },
+          body: JSON.stringify({
+            model: "affinity-compact/test",
+            input: [{ role: "user", content: "fixture question" }],
+            stream: false,
+          }),
+        }), config, logCtx);
+        expect(response.status).toBe(200);
+        await response.text();
+        addFinalRequestLog(nextRequestLogId(), Date.now(), logCtx, response.status);
+        return logCtx;
+      };
+      const first = await turn();
+      expect(seenAuth).toEqual(["Bearer key-a"]);
+      expect(first.cacheAffinity).toBe("bound");
+      config.providers["affinity-compact"]!.apiKey = "key-b";
+      saveConfig(config);
+      const second = await turn();
+      expect(seenAuth.at(-1)).toBe("Bearer key-a");
+      expect(second.cacheAffinity).toBe("kept");
+    });
+
+    test("claude messages: the second turn of a conversation stays on its key", async () => {
+      const config = makeConfig();
+      const turn = async (): Promise<RequestLogContext> => {
+        const logCtx: RequestLogContext = { model: "", provider: "" };
+        const response = await handleClaudeMessages(new Request("http://localhost/v1/messages", {
+          method: "POST",
+          headers: { "content-type": "application/json", "session_id": "msg-conv-1" },
+          body: JSON.stringify({
+            model: "affinity-msg/claude-test", max_tokens: 16,
+            messages: [{ role: "user", content: "hi" }],
+          }),
+        }), config, logCtx, { requestId: nextRequestLogId(), start: Date.now() });
+        expect(response.status).toBe(200);
+        await response.text();
+        return logCtx;
+      };
+      const first = await turn();
+      expect(seenAuth).toEqual(["Bearer key-a"]);
+      expect(first.cacheAffinity).toBe("bound");
+      config.providers["affinity-msg"]!.apiKey = "key-b";
+      saveConfig(config);
+      const second = await turn();
+      expect(seenAuth.at(-1)).toBe("Bearer key-a");
+      expect(second.cacheAffinity).toBe("kept");
+    });
   });
-});
 });

@@ -112,11 +112,22 @@ describe("provider cache affinity store", () => {
 
   test("auto keeps a detected continuation before any cache evidence exists", () => {
     recordProviderCacheAffinity({
-      lane: "lane-1", providerName: "kimi", entryId: "a", model: "m1",
-      cacheRead: 0, cacheWrite: 0, cacheTelemetryReported: true, inputTokens: 10, now: NOW,
+      lane: "lane-1",
+      providerName: "kimi",
+      entryId: "a",
+      model: "m1",
+      cacheRead: 0,
+      cacheWrite: 0,
+      inputTokens: 10,
+      now: NOW,
     });
     const hit = consultProviderCacheAffinity({
-      lane: "lane-1", providerName: "kimi", provider: provider(), model: "m1", continuation: true, now: NOW + 60_000,
+      lane: "lane-1",
+      providerName: "kimi",
+      provider: provider(),
+      model: "m1",
+      continuation: true,
+      now: NOW + 60_000,
     });
     expect(hit?.reason).toBe("continuation");
     expect(consult("lane-1", provider(), "m1", NOW + 60_000)).toBeNull();
@@ -186,14 +197,19 @@ describe("provider cache affinity store", () => {
     })).toBeNull();
   });
 
-  test("off mode never consults and never records", () => {
+  test("off mode never consults an existing binding", () => {
     const off = provider({ cacheAffinity: "off" });
     recordProviderCacheAffinity({
-      lane: "lane-1", providerName: "kimi", entryId: "a", model: "m1",
-      cacheRead: 9000, cacheWrite: 9000, inputTokens: 9000, now: NOW,
-    }, off);
+      lane: "lane-1",
+      providerName: "kimi",
+      entryId: "a",
+      model: "m1",
+      cacheRead: 9000,
+      cacheWrite: 9000,
+      inputTokens: 9000,
+      now: NOW,
+    });
     expect(consult("lane-1", off, "m1", NOW + 1000)).toBeNull();
-    expect(consult("lane-1", provider(), "m1", NOW + 1000)).toBeNull();
   });
 
   test("a different model or provider does not inherit the binding", () => {
@@ -223,12 +239,18 @@ describe("provider cache affinity store", () => {
     expect(consult("lane-2", provider(), "m1", NOW + 25 * 60 * 60_000)).toBeNull();
   });
 
-  test("single-credential providers never bind", () => {
+  test("single-credential providers never consult an existing binding", () => {
     const single = provider({ apiKeyPool: [{ id: "a", key: "key-a" }] });
     recordProviderCacheAffinity({
-      lane: "lane-1", providerName: "kimi", entryId: "a", model: "m1",
-      cacheRead: 9000, cacheWrite: 0, inputTokens: 9000, now: NOW,
-    }, single);
+      lane: "lane-1",
+      providerName: "kimi",
+      entryId: "a",
+      model: "m1",
+      cacheRead: 9000,
+      cacheWrite: 0,
+      inputTokens: 9000,
+      now: NOW,
+    });
     expect(consult("lane-1", single, "m1", NOW + 1000)).toBeNull();
   });
 });
@@ -358,7 +380,10 @@ describe("cache affinity against committed-key movement (persisted config)", () 
     // revision, so dispatch re-reads still honor it.
     expect(rotateKeyOn429(config, "affinity-pool", null, Date.now(), "key-b")?.apiKey).toBe("key-c");
     expect(providerApiKeySelectionIsCurrent(config, "affinity-pool", affinityTransport!)).toBe(true);
-    expect(resolveCurrentProviderApiKeyTransport(config, "affinity-pool", affinityTransport!)?.apiKey).toBe("key-a");
+    const rebuilt = resolveCurrentProviderApiKeyTransport(config, "affinity-pool", affinityTransport!);
+    expect(rebuilt?.apiKey).toBe("key-a");
+    expect(providerApiKeySelectionIsCurrent(config, "affinity-pool", rebuilt!)).toBe(true);
+    expect(resolveCurrentProviderApiKeyTransport(config, "affinity-pool", rebuilt!)?.apiKey).toBe("key-a");
   });
 
   test("a 429 on the pinned key still rotates after the committed key moved", () => {

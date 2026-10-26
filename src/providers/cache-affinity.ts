@@ -1,29 +1,29 @@
 /**
-  * Provider cache affinity: keep a conversation on the key-pool credential that
-  * served its last turn, so that credential's upstream prompt cache is read again
-  * instead of rebuilt on another key.
-  *
-  * Modeled on Magpie's gateway affinity design, expressed in this codebase's
-  * terms: conversations are session lanes (server/request-log-conversation),
-  * credentials are key-pool entries identified by their pool entry id (never key
-  * material), and outcomes are recorded from attempt finalization, where every
-  * adapter's cache usage is already normalized into cache-read / cache-creation
-  * token counts.
-  *
-  * Affinity is a preference inside eligibility, never an override: this module
-  * only answers "which entry served this lane last, and is that worth
-  * preferring?". Whether that entry may serve right now (disabled, cooling,
-  * pacing) is decided by the caller in key-failover, which owns those rules.
-  *
-  * The store is process-local, following the combo session-recall precedent:
-  * a restart forgets every binding and the first post-restart turn of a
-  * conversation is placed by ordinary selection again.
-  *
-  * Lane ids are client-supplied, so a client that churns them can fill the
-  * store and evict other conversations' bindings. The blast radius is lost
-  * cache locality only — no correctness or credential exposure — and the
-  * count/byte bounds below are the mitigation.
-  */
+ * Provider cache affinity: keep a conversation on the key-pool credential that
+ * served its last turn, so that credential's upstream prompt cache is read again
+ * instead of rebuilt on another key.
+ *
+ * Modeled on Magpie's gateway affinity design, expressed in this codebase's
+ * terms: conversations are session lanes (server/request-log-conversation),
+ * credentials are key-pool entries identified by their pool entry id (never key
+ * material), and outcomes are recorded from attempt finalization, where every
+ * adapter's cache usage is already normalized into cache-read / cache-creation
+ * token counts.
+ *
+ * Affinity is a preference inside eligibility, never an override: this module
+ * only answers "which entry served this lane last, and is that worth
+ * preferring?". Whether that entry may serve right now (disabled, cooling,
+ * pacing) is decided by the caller in key-failover, which owns those rules.
+ *
+ * The store is process-local, following the combo session-recall precedent:
+ * a restart forgets every binding and the first post-restart turn of a
+ * conversation is placed by ordinary selection again.
+ *
+ * Lane ids are client-supplied, so a client that churns them can fill the
+ * store and evict other conversations' bindings. The blast radius is lost
+ * cache locality only — no correctness or credential exposure — and the
+ * count/byte bounds below are the mitigation.
+ */
 import type { CacheAffinityMode, OcxProviderConfig } from "../types";
 import type { GenerationContext } from "../lib/state-store-sweeper";
 
@@ -99,10 +99,10 @@ export interface ConsultProviderCacheAffinityInput {
 }
 
 /**
-  * The bound credential for this lane, when affinity says to prefer it.
-  * Purely a preference: the caller must still validate the entry against the
-  * live pool (present, enabled, not cooling) before sending with it.
-  */
+ * The bound credential for this lane, when affinity says to prefer it.
+ * Purely a preference: the caller must still validate the entry against the
+ * live pool (present, enabled, not cooling) before sending with it.
+ */
 export function consultProviderCacheAffinity(input: ConsultProviderCacheAffinityInput): CacheAffinityHit | null {
   const { lane, providerName, provider, model } = input;
   if (!lane || !cacheAffinityApplies(provider)) return null;
@@ -143,23 +143,19 @@ export interface RecordProviderCacheAffinityInput {
 }
 
 /**
-  * Remember who served a completed turn. A turn with no cache telemetry at all
-  * counts its sent prompt as written (silent-cache vendors such as Ollama
-  * Cloud): the prompt the vendor cached is the prompt that was sent.
-  */
-export function recordProviderCacheAffinity(
-  input: RecordProviderCacheAffinityInput,
-  provider?: OcxProviderConfig,
-): void {
+ * Remember who served a completed turn. A turn with no cache telemetry at all
+ * counts its sent prompt as written (silent-cache vendors such as Ollama
+ * Cloud): the prompt the vendor cached is the prompt that was sent.
+ */
+export function recordProviderCacheAffinity(input: RecordProviderCacheAffinityInput): void {
   const { lane, providerName, entryId, model } = input;
   if (!lane || !entryId) return;
-  if (provider && !cacheAffinityApplies(provider)) return;
   const cacheRead = input.cacheRead ?? 0;
   // No write counter reported — reads-only reporters (OpenAI Chat reports
   // reads, never writes) and fully silent vendors alike: the prompt that was
   // sent is what the vendor cached, so it counts as written. An explicitly
   // reported write count, zero included, is believed as-is.
-  const cacheWrite = input.cacheWrite ?? (input.inputTokens ?? 0);
+  const cacheWrite = input.cacheWrite ?? input.inputTokens ?? 0;
   const binding: Binding = {
     providerName,
     entryId,
@@ -203,11 +199,11 @@ export function sweepExpiredProviderCacheAffinity(now: number): number {
 }
 
 /**
-  * Drop bindings whose provider left the live configuration, was disabled, or
-  * lost the bound credential, on a configuration generation change. Consult
-  * re-validates against the live pool on every request regardless; this keeps
-  * unconsulted lanes from lingering.
-  */
+ * Drop bindings whose provider left the live configuration, was disabled, or
+ * lost the bound credential, on a configuration generation change. Consult
+ * re-validates against the live pool on every request regardless; this keeps
+ * unconsulted lanes from lingering.
+ */
 export function reconcileProviderCacheAffinity(context: GenerationContext): number {
   if (context.generation <= lastReconciledGeneration) return 0;
   lastReconciledGeneration = context.generation;

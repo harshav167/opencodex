@@ -930,8 +930,7 @@ export async function handleResponsesCompact(
       // Transport variant, for the same reason as the Responses core: the persisted row has no
       // registry backfills, and compactProvider is read for its transport fields below.
       let warmKeyProvider;
-      const affinityLane = sessionLaneIdFromRequest(req.headers)
-        ?? normalizeLogConversationId(logCtx.conversationId);
+      const affinityLane = sessionLaneIdFromRequest(req.headers) ?? (logCtx.conversationIdIsHermesFallback ? undefined : normalizeLogConversationId(logCtx.conversationId));
       if (affinityLane) logCtx.affinityLane = affinityLane;
       try { warmKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, compactProvider, undefined, Date.now(), { lane: affinityLane, model: route.modelId, log: logCtx }); }
       catch (error) {
