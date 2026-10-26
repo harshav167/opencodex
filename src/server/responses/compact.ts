@@ -224,7 +224,7 @@ import { fetchWithHeaderTimeout, providerFetch, safeHostLabel, safeOriginLabel, 
 import { requestPacingOverloadResponse } from "./pacing-overload";
 import { shouldRetryCodexPoolAccountQuota, shouldRetryCodexPoolAccountTransient } from "./core-codex-account";
 import { mapCodexAuthContextErrorToResponse, nativeMainRefreshFailureResponse } from "./codex-auth-error";
-import { linkRequestSessionLane, sessionLaneIdFromRequest, reasoningReplayConversationIdFromResponsesRequest, sessionIdHeaderFromRequest } from "../request-log-conversation";
+import { linkRequestSessionLane, normalizeLogConversationId, sessionLaneIdFromRequest, reasoningReplayConversationIdFromResponsesRequest, sessionIdHeaderFromRequest } from "../request-log-conversation";
 import { recallComboForLane } from "./combo-session-recall";
 import { redactHostedImageDisplayPaths } from "../responses-hosted-image-display";
 
@@ -930,7 +930,10 @@ export async function handleResponsesCompact(
       // Transport variant, for the same reason as the Responses core: the persisted row has no
       // registry backfills, and compactProvider is read for its transport fields below.
       let warmKeyProvider;
-      try { warmKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, compactProvider); }
+      const affinityLane = sessionLaneIdFromRequest(req.headers)
+        ?? normalizeLogConversationId(logCtx.conversationId);
+      if (affinityLane) logCtx.affinityLane = affinityLane;
+      try { warmKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, compactProvider, undefined, Date.now(), { lane: affinityLane, model: route.modelId, log: logCtx }); }
       catch (error) {
         const refusal = requestPacingOverloadResponse(error);
         if (refusal) return refusal;

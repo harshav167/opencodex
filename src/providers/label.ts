@@ -14,14 +14,18 @@ export function usesApiKeyAccount(provider: Pick<OcxProviderConfig, "authMode" |
 
 /** Key identity comes from the captured selection, before env/keychain resolution. */
 export function stampApiKeyAccountLabel(
-  logCtx: { accountLogLabel?: string },
+  logCtx: { accountLogLabel?: string; affinityKeyEntryId?: string },
   providerName: string,
   provider: Pick<OcxProviderConfig, "authMode" | "_apiKeyAttempt">,
 ): void {
   if (usesApiKeyAccount(provider)) {
     logCtx.accountLogLabel = apiKeyAccountLogLabel(providerName, provider._apiKeyAttempt);
+    // Cache affinity records against the pool entry id (a configuration
+    // identifier), never the key the digest above is derived from.
+    logCtx.affinityKeyEntryId = provider._apiKeyAttempt?.entryId;
   } else if (KEY_ACCOUNT_LOG_LABEL_RE.test(logCtx.accountLogLabel ?? "")) {
     delete logCtx.accountLogLabel;
+    delete logCtx.affinityKeyEntryId;
   }
 }
 

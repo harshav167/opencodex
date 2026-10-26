@@ -16,9 +16,22 @@ function matchesSelection(provider: OcxProviderConfig, expected: ProviderApiKeyS
   if (expected.distributed) return provider.apiKeySelectionRevision === expected.revision
     && provider.requestPacing?.enabled === true && provider.requestPacing.keySelection === "round-robin"
     && !!provider.apiKeyPool?.some(entry => !entry.disabled && entry.id === expected.entryId && entry.key === expected.reference);
+  if (expected.cacheAffinity === true) {
+    // Affinity picks are fenced on entry liveness, not the selection revision.
+    // commitProviderApiKeySelection bumps the revision on EVERY committed key
+    // change — automatic rotation included — so a revision fence cannot tell
+    // an operator's re-selection from another conversation's rotation, and
+    // telling them apart is not affinity's job: the conversation keeps its
+    // credential while the entry lives, and the provider's cacheAffinity mode
+    // is the operator's override. (Ordinary captured selections keep the
+    // revision fence below: a permit for the previously committed key must
+    // not dispatch after a manual replacement.)
+    return !!expected.entryId && !!expected.reference
+      && (provider.apiKeyPool ?? []).some(entry => entry.id === expected.entryId && entry.key === expected.reference);
+  }
   const current = captureProviderApiKeySelection(provider);
-  return current.entryId === expected.entryId && current.reference === expected.reference
-    && current.revision === expected.revision;
+  if (current.revision !== expected.revision) return false;
+  return current.entryId === expected.entryId && current.reference === expected.reference;
 }
 
 function currentKeyProvider(config: OcxConfig, name: string, selection?: ProviderApiKeySelection, allowCooling = false): OcxProviderConfig | null {
@@ -30,6 +43,19 @@ function currentKeyProvider(config: OcxConfig, name: string, selection?: Provide
     if (!entry || entry.disabled || (!allowCooling && isKeyInCooldown(name, entry.id)) || configured.apiKeySelectionRevision !== selection.revision
       || !configured.requestPacing?.enabled || configured.requestPacing.keySelection !== "round-robin") return null;
     row = { ...configured, apiKey: entry.key, _apiKeyAttempt: selection };
+  }
+  else if (selection?.cacheAffinity && selection.entryId && selection.reference) {
+    // A request-captured pool selection (cache affinity picks one without
+    // committing it globally) survives this re-read while its entry is live:
+    // present with the captured key, enabled, and out of cooldown. It is
+    // deliberately NOT fenced on the selection revision — that revision bumps
+    // on every committed change, automatic rotation included, so it cannot
+    // supersede a pick whose whole purpose is to outlast committed movement.
+    // Anything else falls back to the committed row rather than refusing.
+    const entry = configured.apiKeyPool?.find(key => key.id === selection.entryId && key.key === selection.reference);
+    if (entry && !entry.disabled && (allowCooling || !isKeyInCooldown(name, entry.id))) {
+      row = { ...configured, apiKey: entry.key, _apiKeyAttempt: selection };
+    }
   }
   if (row.apiKeyPool?.some(entry => entry.disabled && entry.key === row.apiKey)
     || row.apiKeyPool?.length && row.apiKeyPool.every(entry => entry.disabled)) return null;

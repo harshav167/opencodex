@@ -3,6 +3,7 @@ import { createPhysicalSendReporter } from "../lib/request-execution-budget";
 import { createInferenceSendBudget } from "./inference/context";
 import { observeAdvisorNativeReasoning } from "./inference/advisor-diagnostics";
 import { buildOpenAIChatPassthroughRequest, createOpenAIChatAdapter } from "../adapters/openai-chat";
+import { normalizeLogConversationId, sessionLaneIdFromRequest } from "./request-log-conversation";
 import type { AdapterRequest, ProviderAdapter } from "../adapters/base";
 import { isNativeChatRouteEligible } from "./chat-native-eligibility";
 import {
@@ -334,7 +335,11 @@ export async function runNativeChatAttempt(
   // Transport variant: the bare picker answers with the persisted row, which for a built-in
   // provider carries no adapter id or base URL until routedProviderConfig backfills it.
   try {
-    const proactiveKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, route.provider);
+    const affinityLane = sessionLaneIdFromRequest(req.headers)
+      ?? normalizeLogConversationId(logCtx.conversationId);
+    if (affinityLane) logCtx.affinityLane = affinityLane;
+    const chatMessages = Array.isArray(execution.chatBody.messages) ? execution.chatBody.messages : [];
+    const proactiveKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, route.provider, undefined, Date.now(), { lane: affinityLane, model: route.modelId, log: logCtx, continuation: (chatMessages.at(-1) as { role?: unknown } | undefined)?.role === "tool" });
     if (proactiveKeyProvider) route.provider = proactiveKeyProvider;
   } catch (error) {
     cleanupAbort(); upstream.abort();

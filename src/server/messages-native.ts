@@ -76,6 +76,7 @@ import {
   transientRetryPolicyFor,
 } from "../providers/key-failover";
 import { stampApiKeyAccountLabel } from "../providers/label";
+import { normalizeLogConversationId, sessionLaneIdFromRequest } from "./request-log-conversation";
 import { OAuthAccountPausedError, OAuthLoginRequiredError, publicOAuthAuthenticationErrorMessage } from "../oauth";
 import { AnthropicAccountCooldownError, formatAnthropicProviderForLog, anthropicRoutingFor } from "../oauth/anthropic-routing";
 import { configuredAnthropicInstance } from "../providers/anthropic-instance";
@@ -445,7 +446,13 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
   } else {
     // Same pre-dispatch key preference every direct send path applies (see chat-native.ts).
     try {
-      const proactiveKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, route.provider);
+      const affinityLane = sessionLaneIdFromRequest(req.headers)
+        ?? normalizeLogConversationId(logCtx.conversationId);
+      if (affinityLane) logCtx.affinityLane = affinityLane;
+      const lastMessage = Array.isArray(body.messages) ? body.messages.at(-1) : undefined;
+      const continuation = Array.isArray(lastMessage?.content)
+        && lastMessage.content.some((block: unknown) => !!block && typeof block === "object" && (block as { type?: unknown }).type === "tool_result");
+      const proactiveKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, route.provider, undefined, Date.now(), { lane: affinityLane, model: route.modelId, log: logCtx, continuation });
       if (proactiveKeyProvider) route.provider = proactiveKeyProvider;
     } catch (error) {
       cleanupAbort(); upstream.abort();
