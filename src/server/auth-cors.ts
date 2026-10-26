@@ -1170,6 +1170,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   openaiChatEofTolerance: "editor",
   foldDeveloperRoleToSystem: "editor",
   promptCacheKey: "editor",
+  cacheAffinity: "editor",
   chatServiceTier: "editor",
   responsesItemIdRepair: "editor",
   autoToolChoiceOnlyModels: "editor",

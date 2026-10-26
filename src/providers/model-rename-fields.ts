@@ -127,6 +127,7 @@ export const PROVIDER_MODEL_RENAME_ROLES = {
   openaiChatEofTolerance: "none",
   foldDeveloperRoleToSystem: "none",
   promptCacheKey: "none",
+  cacheAffinity: "none",
   chatServiceTier: "none",
   responsesItemIdRepair: "none",
   autoToolChoiceOnlyModels: "list",
