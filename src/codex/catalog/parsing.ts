@@ -104,6 +104,10 @@ export interface CatalogModel {
   description?: string;
   owned_by?: string;
   reasoningEfforts?: string[];
+  supportsReasoning?: boolean;
+  supportsThinkingToggle?: boolean;
+  supportsReasoningEffort?: boolean;
+  defaultThinkingEnabled?: boolean;
   /** Exact CCA family evidence, retained through the in-memory discovery cache. */
   antigravityEffortWireModelIds?: Partial<Record<"low" | "medium" | "high", string>>;
   /** Suppress only catalog synthesis of a missing max rung; provider-declared max survives. */
@@ -133,6 +137,8 @@ export interface CatalogModel {
   supportsServiceTier?: boolean;
   /** Captured eligible service-tier wire explicitly maps ultrafast to ultrafast. */
   supportsUltraFastTier?: boolean;
+  /** Explicitly verified exact Flex wire and foreign caller-tier forwarding on this route. */
+  supportsFlexTier?: boolean;
   /** Optional provider-specific copy for the advertised Fast tier. */
   fastTierDescription?: string;
   supportsReasoningSummaries?: boolean;

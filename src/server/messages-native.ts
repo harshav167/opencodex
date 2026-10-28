@@ -123,6 +123,8 @@ import {
   type RequestLogContext,
 } from "./request-log";
 import { fetchWithHeaderTimeout, physicalSendObserverInit, providerFetch, safeHostLabel, sendWithConnectionPolicy } from "./responses/fetch-helpers";
+import { isLocalUpstream } from "../lib/local-upstream";
+import { resolveConnectTimeoutMs, resolveJsonBodyReadTimeoutMs } from "../stall-timeout";
 import { anthropicBillingPhysicalFetch } from "../providers/anthropic-billing-ownership";
 import { rotateAnthropicBillingKeyOnResponse } from "../providers/anthropic-billing-recovery";
 import { linkAbortSignal } from "./responses/core-lifetime";
@@ -425,7 +427,8 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
     streamTurnRegistered = false;
     unregisterTurn(upstream);
   };
-  const connectMs = config.connectTimeoutMs ?? 200_000;
+  // Set only at the final send boundary; queued refresh can replace the destination.
+  let localUpstream = false;
   // An OAuth route is served by the account the existing OAuth selection commits now, at
   // dispatch; the token lives on this lane's provider copy only, never on the shared route.
   let oauthBinding: NativeOAuthBinding | undefined;
@@ -491,6 +494,7 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
       callerAnthropicBeta: options.callerAnthropicBeta,
       providerAccountUuid: oauthBinding?.providerAccountUuid,
       clientIdentity: options.clientIdentity,
+      sessionKey: oauthBinding?.sessionKey ?? options.sessionKey,
     });
     if (built.strippedOpaqueState && rejectUnrepresentable) throw new NativeOpaqueStateRefusal();
     if (built.droppedBetas) {
@@ -566,7 +570,7 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
         request.url,
         applyUpstreamRecoveryInit({ method: "POST", headers: request.headers, body: request.body }, transportRecovery),
         upstream.signal,
-        connectMs,
+        0, // Final physical send owns the header clock after queued credential/destination refresh.
         requestedStream,
         providerFetch(activeProvider, undefined, {
           providerName: route.providerName,
@@ -646,13 +650,19 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
               sendOwner = snapshot ? captureAnthropicPhysicalSendOwnership(snapshot) : null;
               if (snapshot && !sendOwner) throw new NativeOAuthSelectionChangedError();
               physicalSendsUsed++;
-              dispatched = await sendWithConnectionPolicy(
+              const physicalFetch = ((input, physicalInit) => sendWithConnectionPolicy(
                 distributedKeyPhysicalFetch(
                   anthropicBillingPhysicalFetch((activeProvider as OcxProviderTransport).fetch ?? execute, route.providerName, activeProvider),
                   route.providerName, activeProvider, wire.url, activeProvider.apiKeyTransport === "bearer" ? "authorization" : "x-api-key"),
+                String(input), physicalInit, { providerName: route.providerName, provider: activeProvider },
+              )) as typeof fetch;
+              localUpstream = isLocalUpstream(wire.url);
+              dispatched = await fetchWithHeaderTimeout(
                 wire.url,
                 applyUpstreamRecoveryInit({ ...init, method: "POST", headers, body: wire.body, ...physicalSendObserverInit(observeAutoPause, wire.url) }, transportRecovery),
-                { providerName: route.providerName, provider: activeProvider },
+                init.signal ?? upstream.signal,
+                resolveConnectTimeoutMs(config.connectTimeoutMs, { localUpstream }),
+                requestedStream, physicalFetch,
               );
             } finally {
               try { if (physicalBudget.spendEnforced) spendReport(1); }
@@ -967,11 +977,12 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
 
   let read;
   try {
+    const jsonBodyReadMs = resolveJsonBodyReadTimeoutMs(config.stallTimeoutSec, { localUpstream }, config.connectTimeoutMs);
     read = await readBoundedResponseBody(response, {
       signal: upstream.signal,
       maxBytes: MAX_NATIVE_MESSAGES_JSON_BYTES,
-      totalTimeoutMs: Math.max(connectMs, 5_000),
-      inactivityTimeoutMs: Math.max(connectMs, 5_000),
+      totalTimeoutMs: localUpstream ? 0 : jsonBodyReadMs,
+      inactivityTimeoutMs: jsonBodyReadMs,
     });
   } catch (error) {
     cleanupAbort();

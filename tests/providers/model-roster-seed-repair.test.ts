@@ -16,7 +16,7 @@ import { PROVIDER_REGISTRY } from "../../src/providers/registry";
 import { enrichProviderFromRegistry } from "../../src/providers/derive";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 
-const PREVIEW = "MiniMax-M3.1-Flash-Preview";
+const PREVIEW = "MiniMax-M3.1-Flash";
 
 describe("DeepSeek Pro saved roster refresh", () => {
   const before = ["deepseek-chat", "deepseek-reasoner", "deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"];
@@ -72,6 +72,65 @@ function minimaxConfig(provider: string, row: Partial<OcxProviderConfig>): OcxCo
 }
 
 describe("stale model roster migration", () => {
+  describe.each(["minimax", "minimax-cn"])("MiniMax destination guard: %s", (provider) => {
+    const savedRow = (baseUrl: string | undefined, models = MINIMAX_MODELS_BEFORE_M31) => ({
+      baseUrl, models: [...models], defaultModel: "MiniMax-M3", liveModels: false,
+      modelContextWindows: { "MiniMax-M3": 123 },
+      modelMaxOutputTokens: { "MiniMax-M3": 456 },
+      modelDefaultReasoningEfforts: { "MiniMax-M3": "low" },
+    });
+
+    test.each([
+      "https://gateway.example/v1",
+      "https://api.minimax.io.gateway.example/v1",
+      "https://api.minimaxi.com.gateway.example/v1",
+      "https://api.minimax.cn.gateway.example/v1",
+      "https://api.minimax.io/other/v1",
+      "https://api.minimaxi.com/other/v1",
+      "https://api.minimax.cn/other/v1",
+      "http://api.minimax.io/v1",
+      "http://api.minimaxi.com/v1",
+      "http://api.minimax.cn/v1",
+      "https://api.minimax.io/anthropic",
+      "https://api.minimaxi.com/anthropic",
+      "https://api.minimax.cn/anthropic",
+    ])("keeps the entire old seed row at %s", (baseUrl) => {
+      const config = minimaxConfig(provider, savedRow(baseUrl));
+      const original = structuredClone(config.providers![provider]!);
+      const result = projectStaleModelRosters(config);
+      expect(result.config.providers![provider]).toEqual(original);
+      expect(result.changed).toBe(false);
+      expect(result.warnings).toEqual([]);
+    });
+
+    test("does not fill a current Custom roster's partial output map", () => {
+      const config = minimaxConfig(provider, savedRow("https://gateway.example/v1", MINIMAX_MODELS));
+      const original = structuredClone(config.providers![provider]!);
+      const result = projectStaleModelRosters(config);
+      expect(result.config.providers![provider]).toEqual(original);
+      expect(result.changed).toBe(false);
+      expect(result.warnings).toEqual([]);
+    });
+
+    test.each([
+      ...["https://api.minimax.io/v1", "https://api.minimaxi.com/v1", "https://api.minimax.cn/v1"]
+        .flatMap(url => [url, `${url}/`, `${url}/chat/completions`, `${url}/chat/completions/`]),
+      undefined, "",
+    ])("refreshes the official or default destination %s", (baseUrl) => {
+      const config = minimaxConfig(provider, savedRow(baseUrl));
+      if (baseUrl === undefined) delete config.providers![provider]!.baseUrl;
+      const result = projectStaleModelRosters(config);
+      const row = result.config.providers![provider]!;
+      expect(result.changed).toBe(true);
+      expect(row.models).toEqual(MINIMAX_MODELS);
+      expect(row.baseUrl).toBe(baseUrl);
+      expect(row.modelContextWindows).toEqual({ "MiniMax-M3": 123, [PREVIEW]: 1_000_000 });
+      expect(row.modelMaxOutputTokens).toEqual({ "MiniMax-M3": 456, [PREVIEW]: 524_288 });
+      expect(row.modelDefaultReasoningEfforts).toEqual({ "MiniMax-M3": "low", [PREVIEW]: "max" });
+      expect(projectStaleModelRosters(config).changed).toBe(false);
+    });
+  });
+
   test("adds Muse Wonder to an untouched saved Meta Model API seed", () => {
     const config = { providers: { "meta-model": {
       adapter: "openai-responses",
@@ -138,6 +197,42 @@ describe("stale model roster migration", () => {
       modelDefaultReasoningEfforts: { [PREVIEW]: "low" },
     }));
     expect(projection.config.providers!.minimax!.modelDefaultReasoningEfforts).toEqual({ [PREVIEW]: "low" });
+  });
+
+  test("fills the Flash output limit into an existing partial output map", () => {
+    // Custom catalog rows read the saved map directly; without this the added id would
+    // publish with no output ceiling (CodeRabbit on #7739).
+    const projection = projectStaleModelRosters(minimaxConfig("minimax", {
+      models: [...MINIMAX_MODELS_BEFORE_M31],
+      modelMaxOutputTokens: { "MiniMax-M3": 128_000 },
+    }));
+    expect(projection.config.providers!.minimax!.modelMaxOutputTokens).toEqual({
+      "MiniMax-M3": 128_000, [PREVIEW]: 524_288,
+    });
+  });
+
+  test("renames a saved MiniMax-M3.1-Flash-Preview selection to the GA id on both presets", () => {
+    const RETIRED = "MiniMax-M3.1-Flash-Preview";
+    for (const [provider, baseUrl] of [["minimax", "https://api.minimax.io/v1"], ["minimax-cn", "https://api.minimaxi.com/v1"]] as const) {
+      const config = minimaxConfig(provider, {
+        baseUrl,
+        authMode: "key",
+        defaultModel: RETIRED,
+        models: MINIMAX_MODELS.map(id => (id === PREVIEW ? RETIRED : id)),
+        modelContextWindows: { [RETIRED]: 1_000_000, "MiniMax-M3": 1_000_000 },
+        modelDefaultReasoningEfforts: { [RETIRED]: "high" },
+      });
+      const projection = projectStartupConfigRepairs(config);
+      const row = projection.config.providers![provider]!;
+      expect(projection.changed).toBe(true);
+      expect(JSON.stringify(projection.config)).not.toContain(RETIRED);
+      expect(row.models).toEqual(MINIMAX_MODELS);
+      expect(row.defaultModel).toBe(PREVIEW);
+      expect(row.modelContextWindows).toEqual({ [PREVIEW]: 1_000_000, "MiniMax-M3": 1_000_000 });
+      // The user's saved effort survives the rename rather than being reset to the seed.
+      expect(row.modelDefaultReasoningEfforts).toEqual({ [PREVIEW]: "high" });
+      expect(projectStartupConfigRepairs(structuredClone(projection.config)).changed).toBe(false);
+    }
   });
 
   test("leaves a hand-edited roster alone", () => {
