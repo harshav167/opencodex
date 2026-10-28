@@ -240,8 +240,9 @@ only replaces a cooling or missing committed key; healthy keys need no config wr
 `forgetApiKeyRotationCursor` resets the strategy cursor after operator pool edits.
 Before strategies, request-local cache affinity may retain the lane's serving entry
 without changing the committed selection (see [`inventory.md`](./inventory.md)).
-Local native Chat/Messages pacing and send-budget refusals carry `terminalSource: "synthetic"`;
-finalization preserves their binding and releases only a matching credential's upstream refusal.
+Local native Chat/Messages/compact pacing and send-budget refusals, and adapter-dispatch
+send-budget refusals, carry `terminalSource: "synthetic"`; finalization preserves their binding
+and releases only a matching credential's upstream refusal. HTTP 2xx structured `failed` results neither create nor refresh affinity; successful results retain ordinary serving-entry recording.
 
 On the shared Responses path the assignment lands in `src/server/responses/core.ts`
 immediately before `resolveProviderTransport`. `route.provider` is copied into

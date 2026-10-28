@@ -938,7 +938,7 @@ export async function handleResponsesCompact(
       try { warmKeyProvider = selectProactiveApiKeyTransport(config, route.providerName, compactProvider, undefined, Date.now(), { lane: affinityLane, model: route.modelId, log: logCtx }); }
       catch (error) {
         const refusal = requestPacingOverloadResponse(error);
-        if (refusal) return refusal;
+        if (refusal) { logCtx.terminalSource = "synthetic"; return refusal; }
         throw error;
       }
       if (warmKeyProvider?.apiKey) compactProvider = warmKeyProvider;
@@ -1267,6 +1267,7 @@ export async function handleResponsesCompact(
           now: Date.now(), accountSelector: route.codexAccountNamespace,
         }));
       if (response) {
+        logCtx.terminalSource = "synthetic";
         releaseUpstreamHostAdmission(compactHostAdmissionLease);
         compactHostAdmissionLease = null;
         releaseCodexAuthContextProbeLease(outcomeCtx);

@@ -19,7 +19,7 @@ export function finalizeProviderCacheAffinity(
     affinityProviderName: providerName,
   } = logCtx;
   if (!lane || !entryId || !providerName || logCtx.cacheAffinityApplicable !== true) return;
-  if (status >= 200 && status < 300) {
+  if (status >= 200 && status < 300 && logCtx.observedTerminalStatus !== "failed") {
     const previouslyBound = boundEntryIdForLane(lane);
     recordProviderCacheAffinity({
       lane,

@@ -7,8 +7,8 @@ import { startServer } from "../../src/server";
 import { handleChatCompletions } from "../../src/server/chat-completions";
 import { handleClaudeMessages } from "../../src/server/claude-messages";
 import { loadConfig, saveConfig } from "../../src/config";
-import { addFinalRequestLog, nextRequestLogId, type RequestLogContext } from "../../src/server/request-log";
-import { clearProviderCacheAffinityForTests, recordProviderCacheAffinity } from "../../src/providers/cache-affinity";
+import { addFinalRequestLog, inspectResponseLogJson, nextRequestLogId, type RequestLogContext } from "../../src/server/request-log";
+import { boundEntryIdForLane, clearProviderCacheAffinityForTests, recordProviderCacheAffinity } from "../../src/providers/cache-affinity";
 import { RequestPacingQueueOverloadError } from "../../src/providers/request-pacing";
 import { SendBudgetExhaustedError } from "../../src/lib/upstream-retry";
 import { protocolTraceForRequest } from "../../src/protocols/trace";
@@ -168,7 +168,7 @@ describe("provider cache affinity (end-to-end)", () => {
         },
       }), { status: 200, headers: { "content-type": "application/json" } });
     }) as typeof fetch;
-  });
+  }, SERVER_BUDGET_MS);
 
   afterEach(async () => {
     for (const server of trackedServers) {
@@ -375,6 +375,72 @@ describe("provider cache affinity (end-to-end)", () => {
     expect(next.cacheAffinity).toBe("kept");
     expect(seenAuth.at(-1)).toBe("Bearer key-a");
   });
+
+  test.each([false, true])("HTTP 200 structured failure does not bind or replace affinity (bound=%s)", (bound) => {
+    const lane = "structured-failure";
+    if (bound) recordProviderCacheAffinity({ lane, providerName: "affinity-e2e", entryId: "a", model: "test", cacheWrite: 4000 });
+    const log: RequestLogContext = {
+      model: "test", provider: "affinity-e2e", affinityLane: lane,
+      affinityKeyEntryId: "b", affinityProviderName: "affinity-e2e", cacheAffinityApplicable: true,
+    };
+    inspectResponseLogJson(log, JSON.stringify({
+      status: "failed", error: { code: "request_send_budget_exhausted", message: "Local send budget exhausted" },
+      usage: { input_tokens: 5000, output_tokens: 0 },
+    }));
+    expect(log.observedTerminalStatus).toBe("failed");
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, 200);
+    expect(boundEntryIdForLane(lane)).toBe(bound ? "a" : undefined);
+    expect(log.cacheAffinity).toBeUndefined();
+    // A completed structured turn still binds the serving entry.
+    delete log.observedTerminalStatus;
+    inspectResponseLogJson(log, JSON.stringify({ status: "completed" }));
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, 200);
+    expect(boundEntryIdForLane(lane)).toBe("b");
+    expect(log.cacheAffinity).toBe("bound");
+  });
+
+  test.each(["compact-pacing-pick", "compact-pacing-send", "compact-budget", "adapter-initial", "adapter-recovery"])(
+    "%s local refusal preserves affinity and carries synthetic attribution", async (kind) => {
+      const config = makeConfig();
+      const compact = kind.startsWith("compact");
+      const providerName = compact ? "affinity-compact" : "affinity-e2e";
+      const provider = config.providers[providerName]!;
+      // Explicitly exercise native compact rather than the gateway summarizer fallback.
+      if (compact) provider.supportsNativeCompactEndpoint = true;
+      if (kind === "compact-pacing-pick") provider.requestPacing = { enabled: true, keySelection: "round-robin" };
+      provider.retryOn429 = { attempts: 1, intervalMs: 1000, maxIntervalMs: 1000 };
+      saveConfig(config);
+      const lane = sessionLaneIdFromRequest(new Headers({ "thread-id": "local-responses-refusal" }));
+      recordProviderCacheAffinity({ lane, providerName, entryId: "a", model: "test", cacheWrite: 4000 });
+      if (kind === "compact-pacing-pick") {
+        for (const entry of provider.apiKeyPool!) setKeyCooldown(providerName, entry.id, Date.now() + 60_000);
+      }
+      let sends = 0;
+      globalThis.fetch = (async (input) => {
+        sends++;
+        if (compact) expect(String(input)).toBe("https://upstream.invalid/v1/responses/compact");
+        if (kind === "adapter-recovery" && sends === 1) return Response.json({ error: { message: "rate limited" } }, {
+          status: 429, headers: { "retry-after": "0" },
+        });
+        if (kind === "compact-pacing-send") throw new RequestPacingQueueOverloadError(providerName, "queue_full", 1);
+        throw new SendBudgetExhaustedError();
+      }) as typeof globalThis.fetch;
+      const log: RequestLogContext = { model: "", provider: "" };
+      const request = new Request(`http://localhost/v1/responses${compact ? "/compact" : ""}`, {
+        method: "POST", headers: { "content-type": "application/json", "thread-id": "local-responses-refusal" },
+        body: JSON.stringify({ model: `${providerName}/test`, input: "hello", stream: false, store: false }),
+      });
+      const response = compact ? await handleResponsesCompact(request, config, log) : await handleResponses(request, config, log, {});
+      expect(response.status).toBe(429);
+      await response.text();
+      addFinalRequestLog(nextRequestLogId(), Date.now(), log, response.status);
+      // Inspect the actual binding before attribution, so release defects fail visibly too.
+      expect(boundEntryIdForLane(lane)).toBe("a");
+      expect(log.cacheAffinity).not.toBe("released");
+      expect(log.terminalSource).toBe("synthetic");
+      expect(sends).toBe(kind === "compact-pacing-pick" ? 0 : kind === "adapter-recovery" ? 2 : 1);
+    },
+  );
 
   test.each(["provider", "entry"])("a refusal from another %s preserves the healthy binding", async (identity) => {
     const config = makeConfig();
