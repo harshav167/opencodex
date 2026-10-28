@@ -48,7 +48,7 @@ export function finalizeProviderCacheAffinity(
   ) {
     // Only this request's refusal is evidence. A shared cooldown may have been
     // written by another conversation while this request was in flight.
-    releaseProviderCacheAffinity(lane, providerName, entryId);
+    if (!releaseProviderCacheAffinity(lane, providerName, entryId)) return;
     logCtx.cacheAffinity = "released";
     logCtx.cacheAffinityReason = status === 401 ? "auth" : "quota";
   }

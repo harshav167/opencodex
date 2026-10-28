@@ -181,13 +181,14 @@ export function releaseProviderCacheAffinity(
   lane: string | undefined,
   providerName?: string,
   entryId?: string,
-): void {
-  if (!lane) return;
+): boolean {
+  if (!lane) return false;
   const binding = bindings.get(lane);
-  if (!binding) return;
+  if (!binding) return false;
   if ((providerName !== undefined && binding.providerName !== providerName)
-    || (entryId !== undefined && binding.entryId !== entryId)) return;
+    || (entryId !== undefined && binding.entryId !== entryId)) return false;
   deleteBinding(lane);
+  return true;
 }
 
 /** The entry a lane is currently bound to, if any (finalization log attribution). */

@@ -24,6 +24,7 @@ import {
 } from "../../src/server/request-log-conversation";
 import { handleManagementAPI } from "../../src/server/management-api";
 import { ManagementRequest } from "../helpers/management-auth";
+import { SERVER_BUDGET_MS } from "../helpers/test-budget";
 
 const REAL_FETCH = globalThis.fetch;
 let testDir = "";
@@ -181,7 +182,7 @@ describe("provider cache affinity (end-to-end)", () => {
     if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousHome;
     if (testDir) removeTreeWithRetry(testDir);
-  });
+  }, SERVER_BUDGET_MS);
 
   test("a conversation stays on the credential that warmed its cache after the committed key moves", async () => {
     const config = makeConfig();
@@ -381,6 +382,8 @@ describe("provider cache affinity (end-to-end)", () => {
     if (identity === "provider") log.affinityProviderName = "affinity-chat";
     else log.affinityKeyEntryId = "b";
     addFinalRequestLog(nextRequestLogId(), Date.now(), log, 429);
+    expect(log.cacheAffinity).toBe("bound");
+    expect(log.cacheAffinityReason).toBe("new");
     config.providers["affinity-e2e"]!.apiKey = "key-b";
     const next = await turn(config, "other-credential-refusal");
     expect(next.cacheAffinity).toBe("kept");
@@ -466,7 +469,7 @@ describe("provider cache affinity (end-to-end)", () => {
     expect(third.cacheAffinity).toBe("kept");
   });
 
-  test("when every key fails, the binding is released and the next turn starts fresh", async () => {
+  test("when every key fails, the cooled binding survives scoped release and the next turn rebinds", async () => {
     const config = makeConfig();
     await turn(config, "conv-1");
     failingKeys.add("key-a");
@@ -480,13 +483,17 @@ describe("provider cache affinity (end-to-end)", () => {
     await response.text();
     addFinalRequestLog(nextRequestLogId(), Date.now(), logCtx, response.status);
     expect(response.status).toBe(429);
-    expect(logCtx.cacheAffinity).toBe("released");
+    expect(logCtx.cacheAffinity).toBe("kept");
+    expect(consultProviderCacheAffinity({
+      lane: logCtx.affinityLane, providerName: "affinity-e2e",
+      provider: config.providers["affinity-e2e"]!, model: "test",
+    })?.entryId).toBe("a");
 
     failingKeys.clear();
     seenAuth.length = 0;
     const fresh = await turn(config, "conv-1");
     // The failed turn's rotation committed key-b, so fresh placement starts
-    // there; the released binding does not drag the conversation back to a.
+    // there; the cooled binding does not drag the conversation back to a.
     expect(seenAuth[0]).toBe("Bearer key-b");
     expect(fresh.cacheAffinity).toBe("bound");
   });

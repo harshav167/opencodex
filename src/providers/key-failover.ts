@@ -646,6 +646,7 @@ export function selectProactiveApiKeyTransport(
         affinityTransport._apiKeyAttempt = {
           ...affinityTransport._apiKeyAttempt!,
           cacheAffinity: true,
+          distributed: configured.requestPacing?.enabled === true && configured.requestPacing.keySelection === "round-robin",
         };
         return affinityTransport;
       }
@@ -824,7 +825,7 @@ export function recordDistributedKeyFailure(
   const provider = config.providers[providerName];
   if (!selection?.distributed || !provider || provider.authMode === "oauth" || provider.authMode === "forward") return false;
   const failed = provider.apiKeyPool?.find(entry => entry.id === selection.entryId && entry.key === selection.reference);
-  if (!failed || failed.disabled || provider.apiKeySelectionRevision !== selection.revision) return false;
+  if (!failed || failed.disabled || (!selection.cacheAffinity && provider.apiKeySelectionRevision !== selection.revision)) return false;
   const delay = status === "billing" ? ANTHROPIC_BILLING_COOLDOWN_MS : status === 401 ? MAX_COOLDOWN_MS : quotaResetAt !== undefined
     ? Math.max(1, quotaResetAt - now) : parseRetryAfterMs(retryAfter, now) ?? DEFAULT_COOLDOWN_MS;
   for (const entry of provider.apiKeyPool ?? []) if (entry.key === failed.key) {

@@ -13,7 +13,7 @@ import { captureProviderApiKeySelection } from "./api-key-selection-capture";
 export { captureProviderApiKeySelection } from "./api-key-selection-capture";
 
 function matchesSelection(provider: OcxProviderConfig, expected: ProviderApiKeySelection): boolean {
-  if (expected.distributed) return provider.apiKeySelectionRevision === expected.revision
+  if (expected.distributed && !expected.cacheAffinity) return provider.apiKeySelectionRevision === expected.revision
     && provider.requestPacing?.enabled === true && provider.requestPacing.keySelection === "round-robin"
     && !!provider.apiKeyPool?.some(entry => !entry.disabled && entry.id === expected.entryId && entry.key === expected.reference);
   if (expected.cacheAffinity === true) {
@@ -40,7 +40,7 @@ function currentKeyProvider(config: OcxConfig, name: string, selection?: Provide
   let row = configured;
   if (selection?.distributed) {
     const entry = configured.apiKeyPool?.find(key => key.id === selection.entryId && key.key === selection.reference);
-    if (!entry || entry.disabled || (!allowCooling && isKeyInCooldown(name, entry.id)) || configured.apiKeySelectionRevision !== selection.revision
+    if (!entry || entry.disabled || (!allowCooling && isKeyInCooldown(name, entry.id)) || (!selection.cacheAffinity && configured.apiKeySelectionRevision !== selection.revision)
       || !configured.requestPacing?.enabled || configured.requestPacing.keySelection !== "round-robin") return null;
     row = { ...configured, apiKey: entry.key, _apiKeyAttempt: selection };
   }

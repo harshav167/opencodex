@@ -10,10 +10,10 @@ import {
 } from "../../src/providers/cache-affinity";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 import type { GenerationContext } from "../../src/lib/state-store-sweeper";
-import { rotateKeyOn429, rotateProviderTransportOn429, selectProactiveApiKeyTransport, clearKeyCooldowns } from "../../src/providers/key-failover";
+import { rotateKeyOn429, rotateProviderTransportOn429, selectProactiveApiKeyTransport, clearKeyCooldowns, forgetApiKeyRotationCursor } from "../../src/providers/key-failover";
 import { providerApiKeySelectionIsCurrent, resolveCurrentProviderApiKeyTransport } from "../../src/providers/api-key-selection";
 import { resetProviderRequestPacingForTest, waitForProviderRequestSlot } from "../../src/providers/request-pacing";
-import { saveConfig } from "../../src/config";
+import { loadConfig, saveConfig } from "../../src/config";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -244,11 +244,13 @@ describe("provider cache affinity store", () => {
       lane: "lane-1", providerName: "kimi", entryId: "a", model: "m1",
       cacheWrite: 9000, now: NOW,
     });
-    releaseProviderCacheAffinity("lane-1", "other", "a");
+    expect(releaseProviderCacheAffinity("lane-1", "other", "a")).toBe(false);
     expect(consult("lane-1", provider())?.entryId).toBe("a");
-    releaseProviderCacheAffinity("lane-1", "kimi", "b");
+    expect(releaseProviderCacheAffinity("lane-1", "kimi", "b")).toBe(false);
     expect(consult("lane-1", provider())?.entryId).toBe("a");
-    releaseProviderCacheAffinity("lane-1", "kimi", "a");
+    expect(releaseProviderCacheAffinity("lane-1", "kimi", "a")).toBe(true);
+    expect(releaseProviderCacheAffinity("lane-1", "kimi", "a")).toBe(false);
+    expect(releaseProviderCacheAffinity(undefined)).toBe(false);
     expect(consult("lane-1", provider())).toBeNull();
   });
 
@@ -337,6 +339,7 @@ describe("cache affinity against committed-key movement (persisted config)", () 
     previousHome = process.env.OPENCODEX_HOME;
     home = mkdtempSync(join(tmpdir(), "ocx-cache-affinity-fence-"));
     process.env.OPENCODEX_HOME = home;
+    forgetApiKeyRotationCursor();
     clearProviderCacheAffinityForTests();
     clearKeyCooldowns();
     resetProviderRequestPacingForTest();
@@ -382,6 +385,58 @@ describe("cache affinity against committed-key movement (persisted config)", () 
     return selectProactiveApiKeyTransport(config, "affinity-pool", routed, undefined, Date.now(),
       { lane, model: "m1", log: {} });
   }
+
+  test.each([false, true])("round-robin failover stays request-local with affinity=%s", (affinity) => {
+    const config = persistedConfig({
+      apiKey: "key-a", apiKeySelectionRevision: "original",
+      requestPacing: { enabled: true, keySelection: "round-robin" },
+    });
+    if (affinity) bindA();
+    const selected = pick(config)!;
+    expect(selected.apiKey).toBe("key-a");
+    const recovered = rotateProviderTransportOn429(config, "affinity-pool", selected, { attemptedKey: "key-a" });
+    expect(recovered?.apiKey).toBe("key-b");
+    expect(recovered?._apiKeyAttempt?.distributed).toBe(true);
+    expect(config.providers["affinity-pool"]!.apiKey).toBe("key-a");
+    expect(loadConfig().providers["affinity-pool"]!.apiKey).toBe("key-a");
+    expect(loadConfig().providers["affinity-pool"]!.apiKeySelectionRevision).toBe("original");
+  });
+
+  test("round-robin affinity survives revision movement through re-read and failover", () => {
+    const config = persistedConfig({
+      requestPacing: { enabled: true, keySelection: "round-robin", keys: { maxConcurrentRequests: 1 } },
+      apiKeySelectionRevision: "before",
+    });
+    bindA();
+    const selected = pick(config)!;
+    expect(selected.apiKey).toBe("key-a");
+    expect(selected._apiKeyAttempt?.distributed).toBe(true);
+    config.providers["affinity-pool"]!.apiKey = "key-c";
+    config.providers["affinity-pool"]!.apiKeySelectionRevision = "after";
+    saveConfig(config);
+    expect(providerApiKeySelectionIsCurrent(config, "affinity-pool", selected)).toBe(true);
+    const rebuilt = resolveCurrentProviderApiKeyTransport(config, "affinity-pool", selected)!;
+    expect(rebuilt.apiKey).toBe("key-a");
+    expect(rebuilt._apiKeyAttempt?.distributed).toBe(true);
+    const recovered = rotateProviderTransportOn429(config, "affinity-pool", rebuilt, { attemptedKey: "key-a" });
+    expect(recovered?.apiKey).toBe("key-b");
+    expect(loadConfig().providers["affinity-pool"]!.apiKey).toBe("key-c");
+    expect(loadConfig().providers["affinity-pool"]!.apiKeySelectionRevision).toBe("after");
+  });
+
+  test.each(["disabled", "removed", "replaced"])("round-robin affinity fences a %s entry before failover", (change) => {
+    const config = persistedConfig({ requestPacing: { enabled: true, keySelection: "round-robin" } });
+    bindA();
+    const selected = pick(config)!;
+    const entry = config.providers["affinity-pool"]!.apiKeyPool![0]!;
+    if (change === "disabled") entry.disabled = true;
+    else if (change === "removed") config.providers["affinity-pool"]!.apiKeyPool!.shift();
+    else entry.key = "replacement-key";
+    saveConfig(config);
+    expect(providerApiKeySelectionIsCurrent(config, "affinity-pool", selected)).toBe(false);
+    expect(rotateProviderTransportOn429(config, "affinity-pool", selected, { attemptedKey: "key-a" })).toBeNull();
+    expect(loadConfig().providers["affinity-pool"]!.apiKey).toBe("key-b");
+  });
 
   test("an affinity pick survives another conversation's rotation (revision bump)", () => {
     const config = persistedConfig();

@@ -1,5 +1,12 @@
 # Transport Inventory
 
+Round-robin API-key cache-affinity picks carry both request-local affinity and distributed
+selection ownership. Failure recovery cools their live captured entry and selects a request-local
+replacement without writing the saved active key or revision. An unrelated selection revision
+does not revoke a live affinity pick; removed, disabled or replaced entries still cannot send
+or authorize recovery. Final logging reports `released` only when scoped provider/entry release
+actually deletes a binding; a refusal on another entry preserves the binding and prior outcome.
+
 Shared header helpers and bounded local JSON reads follow the
 [local timeout contract](timeouts.md). Disabling
 their clocks retains byte caps, cancellation, manual redirects and transport credential fences.
