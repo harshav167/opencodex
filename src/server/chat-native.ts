@@ -343,6 +343,7 @@ export async function runNativeChatAttempt(
   } catch (error) {
     cleanupAbort(); upstream.abort();
     if (!(error instanceof RequestPacingQueueOverloadError)) throw error;
+    logCtx.terminalSource = "synthetic";
     const refusal = fail(429, error.message, "rate_limit_error");
     refusal.headers.set("Retry-After", String(error.retryAfterSeconds));
     return refusal;
@@ -678,11 +679,13 @@ export async function runNativeChatAttempt(
     if (req.signal.aborted) return fail(499, "Client cancelled request", "client_cancelled");
     const sendError = error instanceof UpstreamRetryEvidenceError ? error.cause : error;
     if (sendError instanceof RequestPacingQueueOverloadError) {
+      logCtx.terminalSource = "synthetic";
       const refusal = fail(429, sendError.message, "rate_limit_error");
       refusal.headers.set("Retry-After", String(sendError.retryAfterSeconds));
       return refusal;
     }
     if (sendError instanceof SendBudgetExhaustedError) {
+      logCtx.terminalSource = "synthetic";
       // A decision this process made, answered as the Responses path answers it: 429, not 502.
       return fail(429, sendError.message, SEND_BUDGET_EXHAUSTED_CODE, SEND_BUDGET_EXHAUSTED_CODE);
     }

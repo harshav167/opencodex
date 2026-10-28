@@ -8,7 +8,10 @@ import { handleChatCompletions } from "../../src/server/chat-completions";
 import { handleClaudeMessages } from "../../src/server/claude-messages";
 import { loadConfig, saveConfig } from "../../src/config";
 import { addFinalRequestLog, nextRequestLogId, type RequestLogContext } from "../../src/server/request-log";
-import { clearProviderCacheAffinityForTests } from "../../src/providers/cache-affinity";
+import { clearProviderCacheAffinityForTests, recordProviderCacheAffinity } from "../../src/providers/cache-affinity";
+import { RequestPacingQueueOverloadError } from "../../src/providers/request-pacing";
+import { SendBudgetExhaustedError } from "../../src/lib/upstream-retry";
+import { protocolTraceForRequest } from "../../src/protocols/trace";
 import { clearKeyCooldowns } from "../../src/providers/key-failover";
 import type { OcxConfig } from "../../src/types";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -325,6 +328,76 @@ describe("provider cache affinity (end-to-end)", () => {
       ).toBe("a");
     },
   );
+
+  test.each(["chat", "messages"])("%s local send refusals preserve cache affinity", async (wire) => {
+    const config = makeConfig();
+    config.protocols = { rollout: { managedMessagesNative: true } };
+    const providerName = wire === "chat" ? "affinity-chat" : "affinity-msg";
+    const model = wire === "chat" ? "test" : "claude-test";
+    const lane = sessionLaneIdFromRequest(new Headers({ "thread-id": "send-refusal" }));
+    recordProviderCacheAffinity({ lane, providerName, entryId: "a", model, cacheWrite: 4000 });
+    const fetch = globalThis.fetch;
+    try {
+      for (const error of [new RequestPacingQueueOverloadError(providerName, "queue_full", 1), new SendBudgetExhaustedError()]) {
+        globalThis.fetch = (async () => { throw error; }) as typeof globalThis.fetch;
+        const log: RequestLogContext = { model: "", provider: "" };
+        const request = new Request(`http://localhost/v1/${wire}`, {
+          method: "POST", headers: { "content-type": "application/json", "thread-id": "send-refusal" },
+          body: JSON.stringify({ model: `${providerName}/${model}`, max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+        });
+        const ids = { requestId: nextRequestLogId(), start: Date.now() };
+        const response = wire === "chat"
+          ? await handleChatCompletions(request, config, log, ids)
+          : await handleClaudeMessages(request, config, log, ids);
+        expect(response.status).toBe(429);
+        await response.text();
+        expect(protocolTraceForRequest(log, log.attempts)?.mode).toBe("native");
+        expect(log.terminalSource).toBe("synthetic");
+        expect(consultProviderCacheAffinity({ lane, providerName, provider: config.providers[providerName]!, model })?.entryId).toBe("a");
+      }
+    } finally {
+      globalThis.fetch = fetch;
+    }
+  });
+
+  test.each([401, 402, 429, 400])("a synthetic %s preserves the healthy binding", async (status) => {
+    const config = makeConfig();
+    const log = await turn(config, "local-refusal");
+    log.terminalSource = "synthetic";
+    log.providerAdapter = "anthropic";
+    log.upstreamError = "Your credit balance is too low to access the Anthropic API.";
+    log.upstreamErrorType = "invalid_request_error";
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, status);
+    expect(log.cacheAffinity).not.toBe("released");
+    config.providers["affinity-e2e"]!.apiKey = "key-b";
+    const next = await turn(config, "local-refusal");
+    expect(next.cacheAffinity).toBe("kept");
+    expect(seenAuth.at(-1)).toBe("Bearer key-a");
+  });
+
+  test.each(["provider", "entry"])("a refusal from another %s preserves the healthy binding", async (identity) => {
+    const config = makeConfig();
+    const log = await turn(config, "other-credential-refusal");
+    if (identity === "provider") log.affinityProviderName = "affinity-chat";
+    else log.affinityKeyEntryId = "b";
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, 429);
+    config.providers["affinity-e2e"]!.apiKey = "key-b";
+    const next = await turn(config, "other-credential-refusal");
+    expect(next.cacheAffinity).toBe("kept");
+    expect(seenAuth.at(-1)).toBe("Bearer key-a");
+  });
+
+  test.each([401, 402, 429])("a real %s releases the serving credential even with a quota error code", async (status) => {
+    const config = makeConfig();
+    const log = await turn(config, "real-refusal");
+    log.errorCode = "usage_limit_reached";
+    addFinalRequestLog(nextRequestLogId(), Date.now(), log, status);
+    expect(log.cacheAffinity).toBe("released");
+    expect(consultProviderCacheAffinity({
+      lane: log.affinityLane, providerName: "affinity-e2e",
+      provider: config.providers["affinity-e2e"]!, model: "test",
+    })).toBeNull();
+  });
 
   test("an exact Anthropic credit refusal releases its binding without a shared cooldown", async () => {
     const config = makeConfig();

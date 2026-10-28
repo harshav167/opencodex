@@ -1,9 +1,9 @@
 # Spec — Provider cache affinity for multi-credential routes
 
-Status: draft spec, not yet triaged upstream. Verified against `main` at
-`6936d9885` (v2.88.0). Intended contribution path: implement on a branch from
-`dev`, prove with focused tests, then open a PR against `dev` (see Further
-Notes on why this is a local spec and not an upstream issue).
+Status: historical design draft. The current implementation contract is in
+[`structure/transports/inventory.md`](../../../structure/transports/inventory.md#transport-inventory).
+The proposal and contribution notes below are retained for design history and
+are not the current implementation contract.
 
 ## Problem Statement
 

@@ -456,6 +456,7 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
     } catch (error) {
       cleanupAbort(); upstream.abort();
       if (!(error instanceof RequestPacingQueueOverloadError)) throw error;
+      logCtx.terminalSource = "synthetic";
       const refusal = fail(429, error.message, "rate_limit_error");
       refusal.headers.set("Retry-After", String(error.retryAfterSeconds));
       return refusal;
@@ -830,11 +831,15 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
     settleDistributedFailure();
     const sendError = error instanceof UpstreamRetryEvidenceError ? error.cause : error;
     if (sendError instanceof RequestPacingQueueOverloadError) {
+      logCtx.terminalSource = "synthetic";
       const refusal = fail(429, sendError.message, "rate_limit_error");
       refusal.headers.set("Retry-After", String(sendError.retryAfterSeconds));
       return refusal;
     }
-    if (sendError instanceof SendBudgetExhaustedError) return fail(429, sendError.message, "send_budget_exhausted", "send_budget_exhausted");
+    if (sendError instanceof SendBudgetExhaustedError) {
+      logCtx.terminalSource = "synthetic";
+      return fail(429, sendError.message, "send_budget_exhausted", "send_budget_exhausted");
+    }
     if (sendError instanceof NativeMessagesSpendRefusal) {
       const refusal = workflowRefusalResponse("workflow-spend-exhausted", logCtx);
       finishLog(429);

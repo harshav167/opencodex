@@ -239,6 +239,19 @@ describe("provider cache affinity store", () => {
     expect(consult("lane-2", provider(), "m1", NOW + 25 * 60 * 60_000)).toBeNull();
   });
 
+  test("release is scoped to the failed provider and pool entry", () => {
+    recordProviderCacheAffinity({
+      lane: "lane-1", providerName: "kimi", entryId: "a", model: "m1",
+      cacheWrite: 9000, now: NOW,
+    });
+    releaseProviderCacheAffinity("lane-1", "other", "a");
+    expect(consult("lane-1", provider())?.entryId).toBe("a");
+    releaseProviderCacheAffinity("lane-1", "kimi", "b");
+    expect(consult("lane-1", provider())?.entryId).toBe("a");
+    releaseProviderCacheAffinity("lane-1", "kimi", "a");
+    expect(consult("lane-1", provider())).toBeNull();
+  });
+
   test("single-credential providers never consult an existing binding", () => {
     const single = provider({ apiKeyPool: [{ id: "a", key: "key-a" }] });
     recordProviderCacheAffinity({

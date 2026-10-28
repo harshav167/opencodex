@@ -177,8 +177,17 @@ export function recordProviderCacheAffinity(input: RecordProviderCacheAffinityIn
   }
 }
 
-export function releaseProviderCacheAffinity(lane: string | undefined): void {
-  if (lane) deleteBinding(lane);
+export function releaseProviderCacheAffinity(
+  lane: string | undefined,
+  providerName?: string,
+  entryId?: string,
+): void {
+  if (!lane) return;
+  const binding = bindings.get(lane);
+  if (!binding) return;
+  if ((providerName !== undefined && binding.providerName !== providerName)
+    || (entryId !== undefined && binding.entryId !== entryId)) return;
+  deleteBinding(lane);
 }
 
 /** The entry a lane is currently bound to, if any (finalization log attribution). */

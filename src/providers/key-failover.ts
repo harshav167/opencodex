@@ -625,7 +625,7 @@ export function selectProactiveApiKeyTransport(
     if (hit) {
       const entry = configured.apiKeyPool?.find((candidate) => candidate.id === hit.entryId);
       if (!entry || entry.disabled) {
-        releaseProviderCacheAffinity(affinity.lane);
+        releaseProviderCacheAffinity(affinity.lane, providerName, hit.entryId);
       } else if (
         !isKeyInCooldown(providerName, entry.id, now) &&
         !affinityPacingSaturated(providerName, configured, entry.id, now)
