@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +32,10 @@ import { providerRequestPacingStatus, resetProviderRequestPacingForTest, setProv
 import { providerApiKeySelectionIsCurrent, resolveCurrentProviderApiKeyTransport, commitProviderApiKeySelection } from "../../src/providers/api-key-selection";
 import { routedProviderConfig } from "../../src/router";
 import type { OcxProviderTransport } from "../../src/providers/xai-transport";
+import { SERVER_BUDGET_MS } from "../helpers/test-budget";
+
+// These cases bind real servers and sockets, including their startup and cleanup.
+setDefaultTimeout(SERVER_BUDGET_MS);
 
 let testDir = "";
 let previousHome: string | undefined;
