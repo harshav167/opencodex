@@ -355,6 +355,7 @@ export const providerConfigSchema = z.object({
   requiresPairedResponsesToolResults: z.boolean().optional(),
   annotateEmptyToolOutputs: z.boolean().optional(),
   foldDeveloperRoleToSystem: z.boolean().optional(),
+  singleLeadingSystemMessage: z.boolean().optional(),
   fastWire: fastWireSchema.nullable().optional(),
   responseTierAuthoritative: z.boolean().optional(),
   fastEnabled: z.boolean().optional(),
@@ -362,6 +363,7 @@ export const providerConfigSchema = z.object({
   inferContextWindow: z.boolean().optional(),
   modelSupportsServiceTier: z.record(z.string().min(1), z.boolean()).optional(),
   modelSuppressSyntheticMax: z.record(z.string().min(1), z.boolean()).optional(),
+  promoteAdditionalTools: z.boolean().optional(),
   preserveResponsesReasoningContent: z.boolean().optional(),
   preserveResponsesInputItemIds: z.boolean().optional(),
   preserveResponsesMessageMetadata: z.boolean().optional(),
@@ -865,6 +867,11 @@ export const opencodeClientExportSchema = z.object({
   headerTimeoutMs: opencodeClientExportTimeout.optional().catch(undefined),
   chunkTimeoutMs: opencodeClientExportTimeout.optional().catch(undefined),
   timeoutMs: opencodeClientExportTimeout.optional().catch(undefined),
+}).passthrough();
+
+/** omo dialect: an unknown value is dropped so the export falls back to the Chat default. */
+export const omoClientExportSchema = z.object({
+  api: z.enum(["openai-completions", "openai-responses"]).optional().catch(undefined),
 }).passthrough();
 
 export const asideProfileSyncSchema = z.object({
