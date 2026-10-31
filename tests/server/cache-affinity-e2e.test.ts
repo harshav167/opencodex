@@ -171,9 +171,10 @@ describe("provider cache affinity (end-to-end)", () => {
   }, SERVER_BUDGET_MS);
 
   afterEach(async () => {
+    const stopFailures: unknown[] = [];
     for (const server of trackedServers) {
       trackedServers.delete(server);
-      await server.stop(true);
+      try { await server.stop(true); } catch (error) { stopFailures.push(error); }
     }
     globalThis.fetch = REAL_FETCH;
     setProviderKeychainEntryFactoryForTests(null);
@@ -182,6 +183,7 @@ describe("provider cache affinity (end-to-end)", () => {
     if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
     else process.env.OPENCODEX_HOME = previousHome;
     if (testDir) removeTreeWithRetry(testDir);
+    if (stopFailures.length > 0) throw new AggregateError(stopFailures, "tracked server stop failed in afterEach");
   }, SERVER_BUDGET_MS);
 
   test("a conversation stays on the credential that warmed its cache after the committed key moves", async () => {
