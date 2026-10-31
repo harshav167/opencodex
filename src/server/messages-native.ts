@@ -449,7 +449,7 @@ export async function handleNativeMessages(options: HandleNativeMessagesOptions)
   } else {
     // Same pre-dispatch key preference every direct send path applies (see chat-native.ts).
     try {
-      const affinityLane = sessionLaneIdFromRequest(req.headers) ?? (logCtx.conversationIdIsHermesFallback ? undefined : normalizeLogConversationId(logCtx.conversationId));
+      const affinityLane = sessionLaneIdFromRequest(req.headers) ?? normalizeLogConversationId(req.headers.get("x-opencode-session")) ?? (logCtx.conversationIdIsHermesFallback ? undefined : normalizeLogConversationId(logCtx.conversationId));
       if (affinityLane) logCtx.affinityLane = affinityLane;
       const lastMessage = Array.isArray(body.messages) ? body.messages.at(-1) : undefined;
       const continuation = Array.isArray(lastMessage?.content)

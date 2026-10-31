@@ -1201,7 +1201,7 @@ export async function prepareResponsesTransport(
   // The Transport variant, not the bare picker: the picker answers with the PERSISTED row, and
   // a built-in provider stored in its valid minimal form would lose the adapter id, base URL
   // and static headers registry backfill supplies, throwing `Unknown adapter: undefined`.
-  const affinityLane = sessionLaneIdFromRequest(req.headers) ?? (logCtx.conversationIdIsHermesFallback ? undefined : normalizeLogConversationId(logCtx.conversationId));
+  const affinityLane = sessionLaneIdFromRequest(req.headers) ?? normalizeLogConversationId(req.headers.get("x-opencode-session")) ?? (logCtx.conversationIdIsHermesFallback ? undefined : normalizeLogConversationId(logCtx.conversationId));
   if (affinityLane) logCtx.affinityLane = affinityLane;
   const proactiveKeyProvider = selectProactiveApiKeyTransport(
     config,
